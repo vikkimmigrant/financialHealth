@@ -8,6 +8,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
@@ -75,13 +86,21 @@ public class CustomerService {
             }
 
             String text;
-            PagePdfDocumentReader pdfReader = new PagePdfDocumentReader(
-                    new FileSystemResource(file),
-                    PdfDocumentReaderConfig.defaultConfig());
-            List<Document> documents = pdfReader.get();
-            text = documents.stream()
-                    .map(Document::getText)
-                    .collect(Collectors.joining("\n"));
+
+            // Support PDF and Excel files
+            if (isPdf(file)) {
+                PagePdfDocumentReader pdfReader = new PagePdfDocumentReader(
+                        new FileSystemResource(file),
+                        PdfDocumentReaderConfig.defaultConfig());
+                List<Document> documents = pdfReader.get();
+                text = documents.stream()
+                        .map(Document::getText)
+                        .collect(Collectors.joining("\n"));
+            } else if (isExcel(file)) {
+                text = readExcel(file);
+            } else {
+                return "Error: Unsupported file format. Please provide a PDF or Excel file.";
+            }
 
             String name = extract(text, "(?i)(?:Customer Name|Account Holder|Name)\\s*[:\\-]\\s*(.+)");
             String accountNumber = extract(text, "(?i)(?:Account Number|A/c No\\.?|Account No\\.?)\\s*[:\\-]\\s*([A-Za-z0-9]+)");
@@ -150,6 +169,104 @@ public class CustomerService {
             return matcher.group(1).trim();
         }
         return null;
+    }
+
+    // Simple PDF detection: extension, MIME probe and PDF magic header
+    private boolean isPdf(File file) {
+        String name = file.getName();
+        if (name != null && name.toLowerCase().endsWith(".pdf")) {
+            return true;
+        }
+        Path path = file.toPath();
+        try {
+            String type = Files.probeContentType(path);
+            if (type != null && type.toLowerCase().contains("pdf")) {
+                return true;
+            }
+        } catch (IOException e) {
+            // ignore
+        }
+        try (InputStream in = Files.newInputStream(path)) {
+            byte[] header = new byte[4];
+            int r = in.read(header);
+            if (r == 4) {
+                String h = new String(header, StandardCharsets.US_ASCII);
+                if ("%PDF".equals(h)) {
+                    return true;
+                }
+            }
+        } catch (IOException e) {
+            // ignore
+        }
+        return false;
+    }
+
+    // Detect Excel files by extension or content type
+    private boolean isExcel(File file) {
+        String name = file.getName().toLowerCase();
+        if (name.endsWith(".xls") || name.endsWith(".xlsx")) {
+            return true;
+        }
+        try {
+            String type = Files.probeContentType(file.toPath());
+            if (type != null && (type.toLowerCase().contains("excel") || type.toLowerCase().contains("spreadsheet") || type.toLowerCase().contains("officedocument.spreadsheet"))) {
+                return true;
+            }
+        } catch (IOException e) {
+            // ignore
+        }
+        return false;
+    }
+
+    // Read an Excel file and produce a plain-text representation (sheet,row,cell)
+    private String readExcel(File file) {
+        StringBuilder sb = new StringBuilder();
+        try (FileInputStream fis = new FileInputStream(file);
+             Workbook wb = WorkbookFactory.create(fis)) {
+            for (int s = 0; s < wb.getNumberOfSheets(); s++) {
+                Sheet sheet = wb.getSheetAt(s);
+                sb.append("Sheet:").append(sheet.getSheetName()).append('\n');
+                for (Row row : sheet) {
+                    boolean firstCell = true;
+                    for (Cell cell : row) {
+                        if (!firstCell) sb.append('\t');
+                        firstCell = false;
+                        switch (cell.getCellType()) {
+                            case STRING:
+                                sb.append(cell.getStringCellValue());
+                                break;
+                            case NUMERIC:
+                                sb.append(cell.getNumericCellValue());
+                                break;
+                            case BOOLEAN:
+                                sb.append(cell.getBooleanCellValue());
+                                break;
+                            case FORMULA:
+                                try {
+                                    sb.append(cell.getStringCellValue());
+                                } catch (Exception ex) {
+                                    sb.append(cell.getCellFormula());
+                                }
+                                break;
+                            case BLANK:
+                                break;
+                            default:
+                                try {
+                                    sb.append(cell.toString());
+                                } catch (Exception ex) {
+                                    // ignore
+                                }
+                        }
+                    }
+                    sb.append('\n');
+                }
+                sb.append('\n');
+            }
+        } catch (Exception e) {
+            // return empty text on failure (caller will handle missing fields)
+            return "";
+        }
+        return sb.toString();
     }
 
     @Tool(name = "removeCustomer",
