@@ -2,7 +2,7 @@ package financialHealth;
 
 import java.util.List;
 
-import financialHealth.CustomerBank;
+import financialHealth.service.CustomerService;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.boot.SpringApplication;
@@ -17,7 +17,7 @@ public class FinancialHealthApplication {
 	}
 
 	@Bean
-	public List<ToolCallback> tools(CustomerBank customerBank) {
+	public List<ToolCallback> tools(CustomerService customerBank) {
 		return List.of(ToolCallbacks.from(customerBank));
 	}
 
